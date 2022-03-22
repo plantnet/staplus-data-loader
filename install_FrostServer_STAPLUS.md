@@ -124,12 +124,12 @@ systemctl restart tomcat9
 
 ## FrostServer from Fraunhofer with Plugin-PLUS
 
-**IMPORTANT** : Plugin-PLUS requires FrostServer v2.0.0, which is not released yet at time of writing (2021-08-31). In this tutorial, branch `develop-entityEvolution` is used, but should be replaced with tag `v2.0.0` as soon as it is released.
+**IMPORTANT** : Plugin-PLUS requires FrostServer v2.0.0, which is not released yet at time of writing (2022-03-22). In this tutorial, branch `develop-2.0` is used, but should be replaced with tag `v2.0.0` as soon as it is released.
 
 ```sh
 git clone https://github.com/FraunhoferIOSB/FROST-Server
 cd FROST-Server
-git checkout develop-entityEvolution
+git checkout develop-2.0
 ```
 
 ### checkout Plugin-PLUS from SecureDimensions
@@ -148,17 +148,17 @@ modif `Plugins/pom.xml`, add
 
 ### adjust logging level
 
-modif `FROST-Server.HTTP/src/main/resources/logback.xml` : replace `DEBUG` logging level with `WARN`
+modif `FROST-Server.HTTP/src/main/resources/logback.xml` : replace `INFO` logging level with `WARN`
 ```xml
-<logger name="de.fraunhofer.iosb.ilt.frostserver.parser.path" level="WARN"/>
-<logger name="de.fraunhofer.iosb.ilt.frostserver.parser.query" level="WARN"/>
-<logger name="de.fraunhofer.iosb.ilt.frostserver.persistence.pgjooq.QueryBuilder" level="WARN"/>
-<logger name="org.jooq" level="WARN"/>
-<logger name="io.moquette.server.netty.NettyMQTTHandler" level="WARN"/>
-<logger name="io.moquette.spi" level="WARN"/>
-<logger name="messageLogger" level="WARN"/>
+<variable name="FROST_LL" value="${FROST_LL:-WARN}" />
+<variable name="FROST_LL_parser" value="${FROST_LL_parser:-WARN}" />
+<variable name="FROST_LL_settings" value="${FROST_LL_settings:-WARN}" />
+<variable name="FROST_LL_queries" value="${FROST_LL_queries:-WARN}" />
+<variable name="FROST_LL_io_moquette" value="${FROST_LL_io_moquette:-WARN}" />
+<variable name="FROST_LL_liquibase" value="${FROST_LL_liquibase:-WARN}" />
+<variable name="FROST_LL_org_jooq" value="${FROST_LL_org_jooq:-WARN}" />
 
- <root level="WARN">
+<root level="WARN">
     <appender-ref ref="STDOUT" />
     <appender-ref ref="FILE" />
 </root>
@@ -167,10 +167,10 @@ modif `FROST-Server.HTTP/src/main/resources/logback.xml` : replace `DEBUG` loggi
 ### compile
 
 ```sh
-JAVA_HOME=/usr/lib/jvm/java-15-oracle mvn clean install
+JAVA_HOME=/usr/lib/jvm/java-15-oracle mvn clean install -DskipTests
 ```
 
-tests fail, it's normal (no database yet)
+Use `-DskipTests` or else tests fail, which is normal because there is no database yet, but breaks compilation of some components, including Plugin-PLUS.
 
 compiled app: `./FROST-Server.HTTP/target/FROST-Server.HTTP-2.0.0-SNAPSHOT.war`
 
@@ -217,6 +217,7 @@ modif `/var/lib/tomcat9/webapps/api/META-INF/context.xml`
 <Parameter override="false" name="plugins.plus.enable" value="true" />
 <Parameter override="false" name="plugins.multiDatastream.enable" value="true" />
 <Parameter override="false" name="plugins.openApi.enable" value="true" />
+<Parameter override="false" name="plugins.odata.enable" value="true" />
 …
 
 <Parameter override="false" name="persistence.persistenceManagerImplementationClass" value="de.fraunhofer.iosb.ilt.frostserver.persistence.pgjooq.imp.PostgresPersistenceManagerLong"/>
