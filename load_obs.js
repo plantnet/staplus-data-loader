@@ -8,15 +8,15 @@ const env = require('./env.json');
 
 /**
  * Lit n observations depuis la base de données Pl@ntNet et les charge dans FrostServer-STAPLUS via HTTP
- * (4è implémentation, 2021-09-20 − STAPLUS avec Long IDs)
+ * (5è implémentation, 2022-03-29 − STAPLUS avec Long IDs)
  */
 
 const frostRootURL = env.frostserver.rootURL;
 const frostPublicURL = env.frostserver.publicURL;
 const projectName = "Pl@ntNet DaaS STAPLUS";
-const licensesProperties = env.licenses;
 
 const bsRootURL = env.bsURL;
+const identifyUrl = 'https://identify.plantnet.org';
 
 const usernamePasswordBuffer = Buffer.from(env.frostserver.username + ':' + env.frostserver.password);
 const base64data = usernamePasswordBuffer.toString('base64');
@@ -130,7 +130,6 @@ async function main() {
 /**
  * Created global / generic entities for the whole dataset:
  *  - project
- *  - licenses
  *  - generic observed properties (images, taxons, organs)
  *  - generic sensors (generic camera, generic PN app)
  */
@@ -145,7 +144,7 @@ async function initSTAPLUSCommonData() {
             url: 'https://identify.plantnet.org',
             termsOfUse: "This is a read-only copy of Pl@ntNet plant observations data, for internal usage by Cos4Cloud members only",
             privacyPolicy: "This project stores the user's globally unique identifier that cannot be used to retrieve personal information",
-            created: new Date().toISOString(),
+            creationTime: new Date().toISOString(),
             classification: "public"
         });
         projectId = getEntityId(resp);
@@ -153,24 +152,6 @@ async function initSTAPLUSCommonData() {
         console.debug('project already exists: ' + projectName + ' / ' + projectId);
     }
 
-    // licenses
-    for (const license of Object.keys(licensesProperties)) {
-        let licenseId = await exists("Licenses", "name", license);
-        if (! licenseId) {
-            console.debug('create license: ' + license);
-            const resp = await ax.post(frostRootURL + '/Licenses', {
-                name: license,
-                definition: licensesProperties[license].definition || '',
-                description: licensesProperties[license].description || '',
-                logo: licensesProperties[license].logo || ''
-            });
-            licenseId = getEntityId(resp);
-        } else {
-            console.debug('license already exists: ' + license);
-        }
-        licensesProperties[license].id = licenseId;
-    }
-    
     // ObservedProperty (images)
     imagesObservedPropertyId = await exists("ObservedProperties", "name", "Picture");
     if (! imagesObservedPropertyId) {
@@ -256,24 +237,36 @@ async function exists(entity, property, value) {
  */
 function getEntityId(resp) {
     // console.log(resp);
-    return Number(resp.headers.location.match(/[^(]+\(([0-9]+)\)$/)[1]); // for Long IDs
-    // return resp.headers.location.match(/[^(]+\('([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'\)$/)[1]; // for UUIDs
+    // try long ID
+    const longMatch = resp.headers.location.match(/[^(]+\(([0-9]+)\)$/);
+    if (longMatch && Array.isArray(longMatch) && longMatch.length > 1) {
+        return Number(longMatch[1]);
+    }
+    // try UUID
+    const uuidMatch = resp.headers.location.match(/[^(]+\('([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'\)$/);
+    if (uuidMatch && Array.isArray(uuidMatch) && uuidMatch.length > 1) {
+        return uuidMatch[1];
+    }
+    // give up
+    return null;
 }
 
 /**
- * Returns a license key of env.licenses, from a license
- * string present in Pl@ntNet observation
+ * Returns a license key of pre-loaded STAPLUS licenses,
+ * from a license string present in Pl@ntNet observation
  * @param {string} pnLicense 
- * @returns {string} a license key from env.licenses, or 'unknown'
+ * @returns {string} a license key from STAPLUS, or 'unknown'
  */
 function detectLicense(pnLicense) {
     const mapping = {
-        'cc-by': 'CC BY',
-        'cc-by-nc': 'CC BY-NC',
-        'cc-by-nc-sa': 'CC BY-NC-SA',
-        'cc-by-sa': 'CC BY-SA',
-        'gpl': 'GPL',
-        'public': 'PUBLIC'
+        'cc-by': 'CC_BY',
+        'cc-by-nc': 'CC_BY_NC',
+        'cc-by-sa': 'CC_BY_SA',
+        'cc-by-nc-sa': 'CC_BY_NC_SA',
+        'cc-by-nd': 'CC_BY_ND', // there should be none in PN
+        'cc-by-nc-nd': 'CC_BY_NC_ND', // there should be none in PN
+        'gpl': 'CC_BY_SA', // @TODO or add license ? Only ~1000 obs
+        'public': 'CC_PD'
     };
     if (Object.keys(mapping).includes(pnLicense)) {
         return mapping[pnLicense];
@@ -345,10 +338,9 @@ async function writeToFrost(observations, noDuplicates=true) {
             resp = await ax.post(frostRootURL + '/Parties', {
                 name: obs.author.name,
                 description: 'Pl@ntNet user: ' + obs.author.name + ' (PN id: ' + obs.author.id + ')',
-                // nickName: '',
                 role: 'individual',
-                authId: obs.author.id,
-                // properties: obs.author // keep everything just in case
+                authId: '' + obs.author.id,
+                displayName: obs.author.name
             });
             partyId = getEntityId(resp);
 
@@ -363,8 +355,8 @@ async function writeToFrost(observations, noDuplicates=true) {
             // use generic sensors
 
             const datastreamsPromises = [];
-            const licenseKey = detectLicense(obs.license);
-            // console.log(`partyId: ${partyId}, imagesObservedPropertyId: ${imagesObservedPropertyId}, licenseId: ${licensesProperties[licenseKey].id}, cameraSensorId: ${cameraSensorId}, thingId: ${thingId}, projectId: ${projectId}`);
+            const licenseId = detectLicense(obs.license);
+            // console.log(`partyId: ${partyId}, imagesObservedPropertyId: ${imagesObservedPropertyId}, licenseId: ${licenseId}, cameraSensorId: ${cameraSensorId}, thingId: ${thingId}, projectId: ${projectId}`);
             // Datastream (images)
             datastreamsPromises.push(ax.post(frostRootURL + '/Datastreams', {
                 unitOfMeasurement: {
@@ -376,7 +368,7 @@ async function writeToFrost(observations, noDuplicates=true) {
                 description: 'Datastream of pictures produced by user: ' + obs.author.name + ' (PN id:' + obs.author.id + ')',
                 observationType: 'Picture',
                 ObservedProperty: { '@iot.id': imagesObservedPropertyId },
-                License: { '@iot.id': licensesProperties[licenseKey].id },
+                License: { '@iot.id': licenseId },
                 Sensor: { '@iot.id': cameraSensorId },
                 Party: { '@iot.id': partyId },
                 Thing: { '@iot.id': thingId },
@@ -394,7 +386,7 @@ async function writeToFrost(observations, noDuplicates=true) {
                 description: 'Datastream of species determinations produced by user: ' + obs.author.name + ' (PN id:' + obs.author.id + ')',
                 observationType: 'Plant species',
                 ObservedProperty: { '@iot.id': taxonsObservedPropertyId },
-                License: { '@iot.id': licensesProperties[licenseKey].id },
+                License: { '@iot.id': licenseId },
                 Sensor: { '@iot.id': plantnetAppSensorId },
                 Party: { '@iot.id': partyId },
                 Thing: { '@iot.id': thingId },
@@ -412,7 +404,7 @@ async function writeToFrost(observations, noDuplicates=true) {
                 description: 'Datastream of organ tags produced by user: ' + obs.author.name + ' (PN id:' + obs.author.id + ')',
                 observationType: 'Plant organ',
                 ObservedProperty: { '@iot.id': organsObservedPropertyId },
-                License: { '@iot.id': licensesProperties[licenseKey].id },
+                License: { '@iot.id': licenseId },
                 Sensor: { '@iot.id': plantnetAppSensorId },
                 Party: { '@iot.id': partyId },
                 Thing: { '@iot.id': thingId },
@@ -422,11 +414,10 @@ async function writeToFrost(observations, noDuplicates=true) {
             imagesDatastreamId = getEntityId(datastreamsResponses[0]);
             taxonsDatastreamId = getEntityId(datastreamsResponses[1]);
             organsDatastreamId = getEntityId(datastreamsResponses[2]);
-            // console.log(">> idid/tdid/odid", imagesDatastreamId, taxonsDatastreamId, organsDatastreamId);
 
         } else {
             // fetch existing author Datastreams
-            const resp = await ax.get(frostRootURL + "/Parties(" + partyId + ")?$expand=Datastreams");
+            const resp = await ax.get(frostRootURL + "/Parties('" + partyId + "')?$expand=Datastreams");
             for (let i = 0; i < resp.data.Datastreams.length; i++) {
                 const ds = resp.data.Datastreams[i];
                 if (ds.name.substring(0, 8) === 'Pictures') {
@@ -440,6 +431,7 @@ async function writeToFrost(observations, noDuplicates=true) {
                 }
             }
         }
+        // console.log(">> idid/tdid/odid", imagesDatastreamId, taxonsDatastreamId, organsDatastreamId);
 
         // FeatureOfInterest : la plante (l'individu physique) localisé
         const hasGeoloc = (obs.geoloc && obs.geoloc.lat && obs.geoloc.lon);
@@ -510,17 +502,19 @@ async function writeToFrost(observations, noDuplicates=true) {
         resp = await ax.post(frostRootURL + '/Groups', {
             name: obs._key,
             description: 'Pl@ntNet Observation: picture(s), organ(s) and current determination (PN id:' + obs._key + ')',
-            created: dateObs,
+            creationTime: dateObs,
             // runtime: null
+            // purpose: ?
             Observations: observations,
             properties: {
+                url: identifyUrl + '/' + obs.project_id + '/observations/' + obs._key,
                 project_id: obs.project_id,
                 date_updated: new Date(obs.date_updated).toISOString(),
                 date_observed: new Date(obs.date_obs).toISOString(),
                 date_created: new Date(obs.date_created).toISOString(),
                 submitted: obs.submitted,
                 valid: (obs.computed || {}).valid || false,
-                // votes (agrégés seulement),
+                // votes (agrégés seulement)
                 votes: {
                     determinations: obs.determinations_votes,
                     images: obs.images_votes
@@ -548,7 +542,7 @@ async function writeToFrost(observations, noDuplicates=true) {
             // image
             const pictureObject = oGroup.data.Observations[oGroupObsIndex];
             relations.push({
-                role: '#determinationOf',
+                role: 'dwc:Identification',
                 Subject: { '@iot.id': speciesObject['@iot.id'] },
                 Object: { '@iot.id': pictureObject['@iot.id'] }
             });
@@ -556,7 +550,7 @@ async function writeToFrost(observations, noDuplicates=true) {
             // organ
             const organObject = oGroup.data.Observations[oGroupObsIndex];
             relations.push({
-                role: '#organOf',
+                role: 'organOf', // no dwc term for that :/
                 Subject: { '@iot.id': organObject['@iot.id'] },
                 Object: { '@iot.id': pictureObject['@iot.id'] }
             });
