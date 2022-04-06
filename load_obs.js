@@ -436,7 +436,12 @@ async function writeToFrost(observations, noDuplicates=true) {
         // FeatureOfInterest : la plante (l'individu physique) localisé
         const hasGeoloc = (obs.geoloc && obs.geoloc.lat && obs.geoloc.lon);
         let resp = await ax.post(frostRootURL + '/FeaturesOfInterest', {
-            name: (obs.geoloc || {}).locality || '', // OGC says "put location name here (J. Speckamp)"
+            name: (obs.geoloc || {}).locality ||
+            (
+                ((obs.geoloc || {}).lon && (obs.geoloc || {}).lat)
+                ? `Location: ${obs.geoloc.lat}, ${obs.geoloc.lon}`
+                : 'unknown location'
+            ), // OGC says "put location name here (J. Speckamp)"
             description: 'Location of plant observed (PN observation id:' + obs._key + ')',
             encodingType: hasGeoloc ? 'application/geo+json' : 'application/json', // geojson forces non-empty coordinates
             feature: hasGeoloc ? {
@@ -462,111 +467,137 @@ async function writeToFrost(observations, noDuplicates=true) {
                 console.debug(" ! skip noplant image: " + obs._key + '/' + image.id);
                 continue;
             }
-            nbNonDeletedImages++;
             // image
             observations.push({
-                phenomenonTime: dateObs,
-                resultTime: dateObs,
-                result: bsRootURL + image.id,
-                FeatureOfInterest: { '@iot.id': featureOfInterestId },
-                Datastream: { '@iot.id': imagesDatastreamId }
+                id: obs._key + '_image' + nbNonDeletedImages, // used for batch POSTing only, will be replaced with numeric ID
+                atomicityGroup: "group1",
+                method: "post",
+                url: "Observations",
+                body: {
+                    phenomenonTime: dateObs,
+                    resultTime: dateObs,
+                    result: bsRootURL + image.id,
+                    FeatureOfInterest: { '@iot.id': featureOfInterestId },
+                    Datastream: { '@iot.id': imagesDatastreamId }
+                }
             });
             // organ
             observations.push({
-                phenomenonTime: dateObs,
-                resultTime: dateObs,
-                result: ((image.computed || {}).current_organ) || (image.submitted || {}).organ || '',
-                FeatureOfInterest: { '@iot.id': featureOfInterestId },
-                Datastream: { '@iot.id': organsDatastreamId }
+                id: obs._key + '_organ' + nbNonDeletedImages, // used for batch POSTing only, will be replaced with numeric ID
+                atomicityGroup: "group1",
+                method: "post",
+                url: "Observations",
+                body: {
+                    phenomenonTime: dateObs,
+                    resultTime: dateObs,
+                    result: ((image.computed || {}).current_organ) || (image.submitted || {}).organ || '',
+                    FeatureOfInterest: { '@iot.id': featureOfInterestId },
+                    Datastream: { '@iot.id': organsDatastreamId }
+                }
             });
+            nbNonDeletedImages++;
         }
         // détermination initiale
         observations.push({
-            phenomenonTime: dateObs,
-            resultTime: dateObs,
-            result: ((obs.computed || {}).current_name) || (obs.submitted || {}).name || '',
-            parameters:  obs.species ? { // taxonomic enrichment
-                family: obs.species.family.scientificName,
-                genus: obs.species.genus.scientificName,
-                scientificNameWithoutAuthor: obs.species.scientificNameWithoutAuthor,
-                scientificNameAuthorship: obs.species.scientificNameAuthorship,
-                taxonomicStatus: obs.species.taxonomicStatus,
-                synonyms: obs.species.synonyms,
-                gbif: obs.species.gbifId ? { id: obs.species.gbifId } : null
-            } : null,
-            FeatureOfInterest: { '@iot.id': featureOfInterestId },
-            Datastream: { '@iot.id': taxonsDatastreamId }
-        });
-
-        // Groupe (entité principale)
-        resp = await ax.post(frostRootURL + '/Groups', {
-            name: obs._key,
-            description: 'Pl@ntNet Observation: picture(s), organ(s) and current determination (PN id:' + obs._key + ')',
-            creationTime: dateObs,
-            // runtime: null
-            // purpose: ?
-            Observations: observations,
-            properties: {
-                url: identifyUrl + '/' + obs.project_id + '/observations/' + obs._key,
-                project_id: obs.project_id,
-                date_updated: new Date(obs.date_updated).toISOString(),
-                date_observed: new Date(obs.date_obs).toISOString(),
-                date_created: new Date(obs.date_created).toISOString(),
-                submitted: obs.submitted,
-                valid: (obs.computed || {}).valid || false,
-                // votes (agrégés seulement)
-                votes: {
-                    determinations: obs.determinations_votes,
-                    images: obs.images_votes
-                }
+            id: obs._key + '_determination', // used for batch POSTing only, will be replaced with numeric ID
+            atomicityGroup: "group1",
+            method: "post",
+            url: "Observations",
+            body: {
+                phenomenonTime: dateObs,
+                resultTime: dateObs,
+                result: ((obs.computed || {}).current_name) || (obs.submitted || {}).name || '',
+                parameters:  obs.species ? { // taxonomic enrichment
+                    family: obs.species.family.scientificName,
+                    genus: obs.species.genus.scientificName,
+                    scientificNameWithoutAuthor: obs.species.scientificNameWithoutAuthor,
+                    scientificNameAuthorship: obs.species.scientificNameAuthorship,
+                    taxonomicStatus: obs.species.taxonomicStatus,
+                    synonyms: obs.species.synonyms,
+                    gbif: obs.species.gbifId ? { id: obs.species.gbifId } : null
+                } : null,
+                FeatureOfInterest: { '@iot.id': featureOfInterestId },
+                Datastream: { '@iot.id': taxonsDatastreamId }
             }
         });
-        const groupId = getEntityId(resp);
-        // console.log(resp);
 
         // Relations
-        // load newly created Group to find Observation ids
-
-        const oGroup = await ax.get(frostRootURL + "/Groups(" + groupId + ")?$expand=Observations&$top=1000"); // increase $top (default 100) for obs with 50+ images
         const relations = [];
-        let oGroupObsIndex = 0; // order is important
+        // use $ in @iot.id to reference to-be-created Observations
+        for (let i = 0; i < nbNonDeletedImages; i++) {
+            // image
+            relations.push({
+                id: "relation_" + i + "_identification",
+                atomicityGroup: "group1",
+                method: "post",
+                url: "Relations",
+                body: {
+                    role: 'dwc:Identification',
+                    Subject: { '@iot.id': '$' + obs._key + '_determination' },
+                    Object: { '@iot.id': '$' + obs._key + '_image' + i }
+                }
+            });
+            // organ
+            relations.push({
+                id: "relation_" + i + "_organ",
+                atomicityGroup: "group1",
+                method: "post",
+                url: "Relations",
+                body: {
+                    role: 'organOf', // no dwc term for that :/
+                    Subject: { '@iot.id': '$' + obs._key + '_organ' + i },
+                    Object: { '@iot.id': '$' + obs._key + '_image' + i }
+                }
+            });
+        }
+
+        const groupRequest = {
+            id: "group",
+            atomicityGroup: "group1",
+            method: "post",
+            url: "Groups",
+            body: {
+                name: obs._key,
+                description: 'Pl@ntNet Observation: picture(s), organ(s) and current determination (PN id:' + obs._key + ')',
+                creationTime: dateObs,
+                // runtime: null
+                // purpose: ?
+                Observations: observations.map((o) => { return { '@iot.id': '$' + o.id }; }),
+                Relations: relations.map((r) => { return { '@iot.id': '$' + r.id }; }),
+                properties: {
+                    url: identifyUrl + '/' + obs.project_id + '/observations/' + obs._key,
+                    project_id: obs.project_id,
+                    date_updated: new Date(obs.date_updated).toISOString(),
+                    date_observed: new Date(obs.date_obs).toISOString(),
+                    date_created: new Date(obs.date_created).toISOString(),
+                    submitted: obs.submitted,
+                    valid: (obs.computed || {}).valid || false,
+                    // votes (agrégés seulement)
+                    votes: {
+                        determinations: obs.determinations_votes,
+                        images: obs.images_votes
+                    }
+                }
+            }
+        }
+
+        // batch-POST : Groupe (entité principale) + Observations + Relations
+        const requests = [...observations, ...relations, ...[ groupRequest ]];
+        resp = await ax.post(frostRootURL + '/$batch', { requests });
+        // const groupId = getEntityId(resp);
+        // console.log(resp);
+
+        // load newly created Group
+        // const oGroup = await ax.get(frostRootURL + "/Groups(" + groupId + ")?$expand=Observations&$top=1000"); // increase $top (default 100) for obs with 50+ images
         // check presence of required number of Observations in oGroup
-        const requiredLength = (2 * nbNonDeletedImages + 1); // organ + picture for each image, + determination
+        /* const requiredLength = (2 * nbNonDeletedImages + 1); // organ + picture for each image, + determination
         if (oGroup.data.Observations.length < requiredLength) {
             console.error(' ! PN obs ' + obs._key + ' has length ' + oGroup.data.Observations.length + ' instead of ' + requiredLength + ' (' + nbNonDeletedImages + ' pictures, 1 determination)');
             continue;
-        }
-        // determination (last observation in array)
-        const speciesObject = oGroup.data.Observations[(oGroup.data.Observations.length - 1)];
-        for (let i = 0; i < nbNonDeletedImages; i++) {
-            // image
-            const pictureObject = oGroup.data.Observations[oGroupObsIndex];
-            relations.push({
-                role: 'dwc:Identification',
-                Subject: { '@iot.id': speciesObject['@iot.id'] },
-                Object: { '@iot.id': pictureObject['@iot.id'] }
-            });
-            oGroupObsIndex++;
-            // organ
-            const organObject = oGroup.data.Observations[oGroupObsIndex];
-            relations.push({
-                role: 'organOf', // no dwc term for that :/
-                Subject: { '@iot.id': organObject['@iot.id'] },
-                Object: { '@iot.id': pictureObject['@iot.id'] }
-            });
-            oGroupObsIndex++;
-        }
-        const rPromises = [];
-        for (const relation of relations) {
-            rPromises.push(ax.post(frostRootURL + '/Relations', relation));
-        }
-        const relationsResponses = await Promise.all(rPromises);
-        const relationsReferences = relationsResponses.map((rr) => {
-            return { '@iot.id': getEntityId(rr) };
-        });
+        } */
 
         // update group with newly created relations
-        await ax.patch(frostRootURL + "/Groups(" + groupId + ")", { Relations: relationsReferences });
+        // await ax.patch(frostRootURL + "/Groups(" + groupId + ")", { Relations: relationsReferences });
 
         // @TODO feedbacks ?
 
